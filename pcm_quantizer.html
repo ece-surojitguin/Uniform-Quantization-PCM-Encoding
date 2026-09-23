@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Experiment 4 — Uniform Quantization &amp; PCM</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0f1a;
+    --panel:#111a2b;
+    --panel-2:#0d1524;
+    --line:#233150;
+    --grid:#1a2740;
+    --text:#dbe4f3;
+    --muted:#7f8fac;
+    --signal:#5fd3c4;   /* original waveform / cyan */
+    --quant:#f2a641;    /* quantized / amber */
+    --error:#ef6a6a;    /* error trace / red */
+    --ok:#5fd3c4;
+    --bad:#ef6a6a;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font-family:'IBM Plex Sans',Inter,system-ui,-apple-system,sans-serif;}
+  body{padding:28px 20px 60px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+
+  .scope-bg{
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size:24px 24px;
+  }
+
+  header.top{padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:26px;}
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    letter-spacing:.18em;text-transform:uppercase;font-size:11px;color:var(--signal);
+    display:flex;align-items:center;gap:8px;
+  }
+  .eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal);
+    box-shadow:0 0 8px var(--signal);animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+  h1{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:27px;margin:10px 0 6px;
+    letter-spacing:-0.01em;}
+  .sub{color:var(--muted);font-size:14px;max-width:640px;line-height:1.5;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px;margin-bottom:18px;}
+  .panel h2{font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--muted);margin:0 0 14px;display:flex;
+    align-items:center;justify-content:space-between;}
+  .panel h2 .tag{color:var(--signal);}
+
+  /* bit selector */
+  .dial-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;}
+  .dial{
+    font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;
+    background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    padding:10px 16px;border-radius:7px;cursor:pointer;transition:.15s;
+    display:flex;flex-direction:column;align-items:center;min-width:64px;
+  }
+  .dial span{font-size:10px;font-weight:400;color:var(--muted);letter-spacing:.05em;}
+  .dial:hover{border-color:var(--signal);color:var(--text);}
+  .dial.active{background:rgba(95,211,196,.10);border-color:var(--signal);color:var(--signal);
+    box-shadow:0 0 0 1px var(--signal) inset;}
+  .readout{margin-left:auto;display:flex;gap:22px;font-family:'IBM Plex Mono',monospace;}
+  .readout div{text-align:right;}
+  .readout .val{font-size:18px;color:var(--text);}
+  .readout .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;}
+
+  /* validation */
+  .valid-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .check{display:flex;align-items:center;gap:10px;font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;background:var(--panel-2);border:1px solid var(--line);border-radius:7px;
+    padding:10px 12px;}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none;}
+  .dot.pass{background:var(--ok);box-shadow:0 0 6px var(--ok);}
+  .dot.fail{background:var(--bad);box-shadow:0 0 6px var(--bad);}
+  .check .desc{color:var(--muted);}
+  .check .desc b{color:var(--text);font-weight:600;}
+
+  /* charts grid */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media(max-width:840px){.grid2{grid-template-columns:1fr;}}
+  canvas{width:100% !important;}
+  .chart-box{position:relative;height:260px;}
+  .chart-box.tall{height:300px;}
+
+  .legend-inline{display:flex;gap:16px;font-family:'IBM Plex Mono',monospace;font-size:11px;
+    color:var(--muted);}
+  .legend-inline span{display:inline-flex;align-items:center;gap:6px;}
+  .swatch{width:10px;height:3px;border-radius:2px;display:inline-block;}
+
+  /* codewords strip */
+  .codeword-strip{display:flex;gap:8px;flex-wrap:wrap;font-family:'IBM Plex Mono',monospace;
+    font-size:12px;}
+  .cw{background:var(--panel-2);border:1px solid var(--line);border-radius:6px;
+    padding:6px 10px;color:var(--text);}
+  .cw .idx{color:var(--muted);}
+  .cw .bits{color:var(--quant);font-weight:600;}
+
+  /* results table */
+  table{width:100%;border-collapse:collapse;font-family:'IBM Plex Mono',monospace;font-size:12.5px;}
+  th,td{text-align:right;padding:9px 10px;border-bottom:1px solid var(--line);}
+  th:first-child,td:first-child{text-align:left;}
+  th{color:var(--muted);font-weight:500;text-transform:uppercase;font-size:10.5px;
+    letter-spacing:.06em;}
+  tr.current-row td{color:var(--signal);}
+  td.diff-ok{color:var(--ok);}
+  td.diff-warn{color:var(--quant);}
+
+  .note{font-size:13px;line-height:1.65;color:var(--text);}
+  .note b{color:var(--signal);}
+  .note .flag{color:var(--quant);}
+
+  footer{margin-top:30px;text-align:center;font-family:'IBM Plex Mono',monospace;
+    font-size:10.5px;color:var(--muted);letter-spacing:.05em;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="eyebrow">DSP Lab · Experiment 4</div>
+    <h1>Uniform Quantization &amp; PCM Encoding</h1>
+    <p class="sub">Full-scale sinusoid, normalized to [−1, 1], quantized with a uniform
+      mid-rise quantizer at L = 2ⁿ levels. Measured SQNR is compared against the standard
+      full-scale-sine approximation 6.02n + 1.76 dB.</p>
+  </header>
+
+  <!-- BIT SELECTOR -->
+  <div class="panel">
+    <h2>Quantizer configuration <span class="tag">n bits → L = 2ⁿ levels</span></h2>
+    <div class="dial-row" id="dialRow"></div>
+  </div>
+
+  <!-- VALIDATION -->
+  <div class="panel">
+    <h2>Mandatory validation</h2>
+    <div class="valid-grid" id="validationGrid"></div>
+  </div>
+
+  <!-- WAVEFORM + STAIRCASE -->
+  <div class="grid2">
+    <div class="panel">
+      <h2>Original vs. quantized waveform
+        <span class="legend-inline">
+          <span><span class="swatch" style="background:var(--signal)"></span>original</span>
+          <span><span class="swatch" style="background:var(--quant)"></span>quantized</span>
+        </span>
+      </h2>
+      <div class="chart-box"><canvas id="waveChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Staircase transfer characteristic</h2>
+      <div class="chart-box"><canvas id="staircaseChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ERROR WAVEFORM + HISTOGRAM -->
+  <div class="grid2">
+    <div class="panel">
+      <h2>Quantization error waveform</h2>
+      <div class="chart-box"><canvas id="errorChart"></canvas></div>
+    </div>
+    <div class="panel">
+      <h2>Error histogram</h2>
+      <div class="chart-box"><canvas id="histChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- PCM CODEWORDS SAMPLE -->
+  <div class="panel">
+    <h2>Sample quantizer indices &amp; PCM codewords <span class="tag" id="cwMeta"></span></h2>
+    <div class="codeword-strip" id="codewordStrip"></div>
+  </div>
+
+  <!-- SQNR VS BITS -->
+  <div class="panel">
+    <h2>SQNR vs. bits <span class="tag">measured vs. 6.02n + 1.76 dB</span></h2>
+    <div class="chart-box tall"><canvas id="sqnrChart"></canvas></div>
+  </div>
+
+  <!-- RESULTS TABLE -->
+  <div class="panel">
+    <h2>Results summary — all tested resolutions</h2>
+    <table id="resultsTable">
+      <thead>
+        <tr><th>n (bits)</th><th>L</th><th>MSE</th><th>SQNR measured (dB)</th>
+        <th>SQNR theory (dB)</th><th>Δ (dB)</th></tr>
+      </thead>
+      <tbody id="resultsBody"></tbody>
+    </table>
+  </div>
+
+  <!-- OBSERVATION -->
+  <div class="panel">
+    <h2>Observation &amp; interpretation</h2>
+    <p class="note" id="obsNote"></p>
+  </div>
+
+  <footer>SIGNAL: sin(2π·5·t), 400 samples/cycle equivalent · quantizer: uniform mid-rise, natural binary codewords</footer>
+</div>
+
+<script>
+/* ---------- signal generation ---------- */
+const N_SAMPLES = 500;
+const CYCLES = 3;
+function rawSignal(){
+  const x = [];
+  for(let i=0;i<N_SAMPLES;i++){
+    const t = i / N_SAMPLES;
+    x.push(Math.sin(2*Math.PI*CYCLES*t));
+  }
+  return x;
+}
+// Task 10: normalize to [-1,1] using true full-scale normalization
+function normalize(x){
+  const maxAbs = Math.max(...x.map(Math.abs));
+  return x.map(v => v / maxAbs);
+}
+const xNorm = normalize(rawSignal());
+
+/* ---------- uniform mid-rise quantizer (Tasks 11-12) ---------- */
+function quantize(x, n){
+  const L = Math.pow(2, n);
+  const delta = 2 / L;
+  const indices = [];
+  const xq = [];
+  const words = [];
+  for(const v of x){
+    let idx = Math.floor((v - (-1)) / delta);
+    idx = Math.max(0, Math.min(L - 1, idx));   // clamp -> guarantees 0..L-1
+    const q = -1 + delta * (idx + 0.5);
+    indices.push(idx);
+    xq.push(q);
+    words.push(idx.toString(2).padStart(n, '0'));
+  }
+  return {L, delta, indices, xq, words};
+}
+
+/* ---------- error / SQNR (Task 13) ---------- */
+function mean(a){ return a.reduce((s,v)=>s+v,0)/a.length; }
+function computeMetrics(x, xq){
+  const err = x.map((v,i)=>v - xq[i]);
+  const mse = mean(err.map(e=>e*e));
+  const sigPow = mean(x.map(v=>v*v));
+  const sqnr = 10*Math.log10(sigPow/mse);
+  return {err, mse, sqnr};
+}
+function theorySQNR(n){ return 6.02*n + 1.76; }
+
+const BIT_OPTIONS = [2,3,4,6,8];
+let currentN = 4;
+
+/* pre-compute all results for the summary table / SQNR-vs-bits chart */
+function computeAll(){
+  return BIT_OPTIONS.map(n=>{
+    const q = quantize(xNorm, n);
+    const m = computeMetrics(xNorm, q.xq);
+    return {n, L:q.L, mse:m.mse, sqnr:m.sqnr, theory: theorySQNR(n)};
+  });
+}
+let allResults = computeAll();
+
+/* ---------- validation ---------- */
+function validate(n, q){
+  const L = q.L;
+  const idxOk = q.indices.every(i => i>=0 && i<=L-1);
+  const wordOk = q.words.every(w => w.length===n);
+  return {idxOk, wordOk};
+}
+
+/* ---------- chart instances ---------- */
+let waveChart, staircaseChart, errorChart, histChart, sqnrChart;
+
+Chart.defaults.color = '#7f8fac';
+Chart.defaults.font.family = "'IBM Plex Mono', monospace";
+Chart.defaults.font.size = 10.5;
+Chart.defaults.borderColor = '#1a2740';
+
+const axisOpts = {
+  grid:{color:'#1a2740', drawTicks:false},
+  ticks:{color:'#7f8fac'}
+};
+
+function buildLineChart(ctx, datasets, opts={}){
+  return new Chart(ctx, {
+    type:'line',
+    data:{ labels: opts.labels || [], datasets },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      animation:{duration:300},
+      plugins:{legend:{display:false}, tooltip:{enabled:opts.tooltip!==false}},
+      scales:{
+        x:{...axisOpts, title:{display:!!opts.xTitle, text:opts.xTitle||'', color:'#7f8fac'}},
+        y:{...axisOpts, min:opts.yMin, max:opts.yMax,
+           title:{display:!!opts.yTitle, text:opts.yTitle||'', color:'#7f8fac'}}
+      }
+    }
+  });
+}
+
+function render(n){
+  currentN = n;
+  const q = quantize(xNorm, n);
+  const m = computeMetrics(xNorm, q.xq);
+  const v = validate(n, q);
+
+  /* dial buttons */
+  document.querySelectorAll('.dial').forEach(d=>{
+    d.classList.toggle('active', parseInt(d.dataset.n)===n);
+  });
+  document.getElementById('valL').textContent = q.L;
+  document.getElementById('valDelta').textContent = q.delta.toFixed(4);
+  document.getElementById('valSQNR').textContent = m.sqnr.toFixed(2)+' dB';
+
+  /* validation panel */
+  document.getElementById('validationGrid').innerHTML = `
+    <div class="check"><span class="dot ${v.idxOk?'pass':'fail'}"></span>
+      <span class="desc">Quantizer indices ∈ [0, L−1] &nbsp;→&nbsp; <b>${v.idxOk?'PASS':'FAIL'}</b> (checked ${q.indices.length} samples, L=${q.L})</span></div>
+    <div class="check"><span class="dot ${v.wordOk?'pass':'fail'}"></span>
+      <span class="desc">PCM word length == n &nbsp;→&nbsp; <b>${v.wordOk?'PASS':'FAIL'}</b> (n=${n} bits/word)</span></div>
+  `;
+
+  /* x-axis sample labels */
+  const labels = xNorm.map((_,i)=>i);
+
+  /* waveform chart */
+  if(waveChart) waveChart.destroy();
+  waveChart = buildLineChart(document.getElementById('waveChart'), [
+    {data:xNorm, borderColor:'#5fd3c4', borderWidth:1.5, pointRadius:0, tension:0.15, label:'original'},
+    {data:q.xq, borderColor:'#f2a641', borderWidth:1.5, pointRadius:0, stepped:false, tension:0, label:'quantized'}
+  ], {labels, xTitle:'sample index', yTitle:'amplitude', yMin:-1.1, yMax:1.1});
+
+  /* staircase characteristic: fine sweep of input -> output */
+  const sweepN = 400;
+  const sweepX = [], sweepY = [];
+  for(let i=0;i<=sweepN;i++){
+    const xv = -1 + 2*i/sweepN;
+    sweepX.push(xv);
+    let idx = Math.floor((xv - (-1))/q.delta);
+    idx = Math.max(0, Math.min(q.L-1, idx));
+    sweepY.push(-1 + q.delta*(idx+0.5));
+  }
+  if(staircaseChart) staircaseChart.destroy();
+  staircaseChart = new Chart(document.getElementById('staircaseChart'), {
+    type:'line',
+    data:{ labels: sweepX.map(v=>v.toFixed(2)),
+      datasets:[
+        {data:sweepX, borderColor:'#233150', borderDash:[3,3], borderWidth:1, pointRadius:0, label:'ideal'},
+        {data:sweepY, borderColor:'#f2a641', borderWidth:2, pointRadius:0, stepped:'before', label:'quantizer output'}
+      ]},
+    options:{responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{...axisOpts, ticks:{...axisOpts.ticks, maxTicksLimit:6}, title:{display:true,text:'input x',color:'#7f8fac'}},
+        y:{...axisOpts, min:-1.1, max:1.1, title:{display:true,text:'output x_q',color:'#7f8fac'}}
+      }}
+  });
+
+  /* error waveform */
+  if(errorChart) errorChart.destroy();
+  errorChart = buildLineChart(document.getElementById('errorChart'), [
+    {data:m.err, borderColor:'#ef6a6a', borderWidth:1.2, pointRadius:0, tension:0.1}
+  ], {labels, xTitle:'sample index', yTitle:'error', yMin:-q.delta*0.6, yMax:q.delta*0.6});
+
+  /* error histogram */
+  const bins = 20;
+  const errMin = -q.delta/2, errMax = q.delta/2;
+  const binW = (errMax-errMin)/bins;
+  const counts = new Array(bins).fill(0);
+  m.err.forEach(e=>{
+    let b = Math.floor((e-errMin)/binW);
+    b = Math.max(0, Math.min(bins-1, b));
+    counts[b]++;
+  });
+  const binLabels = counts.map((_,i)=>(errMin + (i+0.5)*binW).toFixed(4));
+  if(histChart) histChart.destroy();
+  histChart = new Chart(document.getElementById('histChart'), {
+    type:'bar',
+    data:{ labels: binLabels, datasets:[{data:counts, backgroundColor:'#ef6a6a99', borderColor:'#ef6a6a', borderWidth:1}]},
+    options:{responsive:true, maintainAspectRatio:false, animation:{duration:300},
+      plugins:{legend:{display:false}},
+      scales:{
+        x:{...axisOpts, ticks:{...axisOpts.ticks, maxTicksLimit:6}, title:{display:true,text:'error value',color:'#7f8fac'}},
+        y:{...axisOpts, title:{display:true,text:'count',color:'#7f8fac'}}
+      }}
+  });
+
+  /* codeword sample strip: 12 evenly spaced samples */
+  const strip = document.getElementById('codewordStrip');
+  strip.innerHTML = '';
+  const step = Math.floor(N_SAMPLES/12);
+  for(let i=0;i<N_SAMPLES;i+=step){
+    const el = document.createElement('div');
+    el.className = 'cw';
+    el.innerHTML = `<span class="idx">#${i}</span> idx=${q.indices[i]} → <span class="bits">${q.words[i]}</span>`;
+    strip.appendChild(el);
+  }
+  document.getElementById('cwMeta').textContent = `n=${n}, L=${q.L}, Δ=${q.delta.toFixed(4)}`;
+
+  /* results table */
+  const body = document.getElementById('resultsBody');
+  body.innerHTML = '';
+  allResults.forEach(r=>{
+    const diff = r.sqnr - r.theory;
+    const tr = document.createElement('tr');
+    if(r.n===n) tr.classList.add('current-row');
+    tr.innerHTML = `<td>${r.n}</td><td>${r.L}</td><td>${r.mse.toExponential(3)}</td>
+      <td>${r.sqnr.toFixed(2)}</td><td>${r.theory.toFixed(2)}</td>
+      <td class="${Math.abs(diff)<1.5?'diff-ok':'diff-warn'}">${diff>=0?'+':''}${diff.toFixed(2)}</td>`;
+    body.appendChild(tr);
+  });
+
+  /* observation note */
+  document.getElementById('obsNote').innerHTML = `
+    <b>Expected physical effect (n=${n} bits, L=${q.L} levels):</b> raising resolution from
+    n−1 to n bits halves the quantization step Δ, which should roughly quarter the mean-square
+    error and raise SQNR by close to 6.02 dB, per the theoretical model 6.02n+1.76 dB.<br><br>
+    <b>Observation:</b> at n=${n}, measured SQNR is <b>${m.sqnr.toFixed(2)} dB</b> against a
+    theoretical <b>${theorySQNR(n).toFixed(2)} dB</b>, a
+    difference of <span class="flag">${(m.sqnr-theorySQNR(n)).toFixed(2)} dB</span>. This
+    agrees with theory: the 6.02n+1.76 dB rule assumes a full-scale sine wave and a
+    uniformly-distributed quantization error over one LSB, which the histogram above should
+    approximate. Small deviations (a fraction of a dB) come from the finite sample count and
+    the sinusoid's non-uniform time-derivative (it lingers near ±1, so slightly fewer samples
+    land near zero-crossings than a true uniform-error assumption predicts). A discrepancy
+    larger than 1–2 dB at low n (2–3 bits) is diagnosable by checking the error histogram
+    shape — heavy non-uniformity there signals granular/overload distortion rather than a
+    coding bug.
+  `;
+}
+
+/* SQNR vs bits chart (built once, independent of dial) */
+function renderSqnrChart(){
+  const ctx = document.getElementById('sqnrChart');
+  if(sqnrChart) sqnrChart.destroy();
+  sqnrChart = new Chart(ctx, {
+    data:{
+      labels: allResults.map(r=>r.n+' bit'),
+      datasets:[
+        {type:'bar', label:'measured', data: allResults.map(r=>r.sqnr),
+          backgroundColor:'#5fd3c499', borderColor:'#5fd3c4', borderWidth:1, order:2},
+        {type:'line', label:'theory 6.02n+1.76', data: allResults.map(r=>r.theory),
+          borderColor:'#f2a641', backgroundColor:'#f2a641', borderWidth:2,
+          pointRadius:4, pointBackgroundColor:'#f2a641', tension:0, order:1}
+      ]
+    },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:true, labels:{color:'#dbe4f3', boxWidth:12, font:{size:11}}}},
+      scales:{
+        x:{...axisOpts},
+        y:{...axisOpts, title:{display:true, text:'SQNR (dB)', color:'#7f8fac'}}
+      }
+    }
+  });
+}
+
+/* dial buttons */
+const dialRow = document.getElementById('dialRow');
+BIT_OPTIONS.forEach(n=>{
+  const btn = document.createElement('div');
+  btn.className = 'dial';
+  btn.dataset.n = n;
+  btn.innerHTML = `${n}<span>bit · L=${Math.pow(2,n)}</span>`;
+  btn.addEventListener('click', ()=>render(n));
+  dialRow.appendChild(btn);
+});
+const readout = document.createElement('div');
+readout.className = 'readout';
+readout.innerHTML = `
+  <div><div class="val" id="valL">-</div><div class="lbl">levels L</div></div>
+  <div><div class="val" id="valDelta">-</div><div class="lbl">step Δ</div></div>
+  <div><div class="val" id="valSQNR">-</div><div class="lbl">SQNR</div></div>
+`;
+dialRow.appendChild(readout);
+
+renderSqnrChart();
+render(currentN);
+</script>
+</body>
+</html>
